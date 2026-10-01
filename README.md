@@ -821,6 +821,76 @@ or, optionally, you can override the default timezone:
 {% set datetime_object = dbt_date.datetime(1997, 9, 29, 6, 14, tz='America/New_York') %}
 ```
 
+## MaxCompute notes & limitations
+
+Everything below is behaviour of the MaxCompute SQL engine (plus one upstream quirk), and it is what
+the `maxcompute__*` macros in this package have to work around. All of it was measured against a real
+MaxCompute project rather than read out of documentation.
+
+* **A `TIMESTAMP` literal needs a time part.** MaxCompute parses `timestamp'...'` only as
+  `yyyy-mm-dd hh:mm:ss`; `timestamp'2026-01-01'` fails with `ODPS-0130161`, and the tempting
+  `cast('2026-01-01' as timestamp)` is worse — the server returns a silent `NULL` instead of an error.
+  `get_base_dates()` normalises its inputs through `dbt_date.maxcompute_timestamp_literal()`, and
+  raises a compilation error for anything that is neither `yyyy-mm-dd` nor `yyyy-mm-dd[ T]hh:mm:ss`,
+  so a mistyped bound cannot turn into an empty calendar.
+* **`TIMESTAMP` is an instant; the project timezone decides how you read it back.**
+  `from_utc_timestamp(x, tz)` adds `tz`'s UTC offset to the value and `to_utc_timestamp(x, tz)`
+  subtracts it. `convert_timezone(col, target_tz, source_tz)` therefore converts a column that stores
+  source-zone wall clock into target-zone wall clock, and the shift is exactly
+  `offset(target) - offset(source)` no matter what the project timezone is. Reading an absolute point
+  in time as a *string* (`now('Asia/Shanghai')`, `today()`) is only unambiguous when the value is
+  rendered in UTC; keep `dbt_date:time_zone` and the project timezone aligned if you compare the
+  rendered text, otherwise compare the value (e.g. `datediff(...)`), not the string.
+* **Daylight-saving edges resolve silently.** A local time inside the spring-forward gap
+  (`2026-03-08 02:30` in `America/Los_Angeles`) is read with the pre-transition offset, and an
+  ambiguous fall-back time (`2026-11-01 01:30`) resolves to the first occurrence. Converting a wall
+  clock across a gap and back shifts it by an hour instead of returning the input, so don't round-trip
+  wall clocks through `convert_timezone()` over a transition.
+* **There is only one week numbering.** `weekofyear()` is ISO-8601 (Monday first, week 1 contains
+  4 January), so `week_of_year()` and `iso_week_of_year()` return the same number here, and
+  `week_of_year('2027-01-01')` is 53 because that date belongs to ISO year 2026. `week_start_date()` /
+  `week_end_date()` keep the Sunday/Saturday convention of the other adapters, while
+  `iso_week_start_date()` / `iso_week_end_date()` are Monday/Sunday.
+* **`date_part()` accepts a subset**: `year`, `month`, `day`, `hour`, `minute`, `week` (ISO),
+  `quarter`, `dayofweek`. Anything else raises a compilation error, because MaxCompute has no
+  `date_trunc` (the adapter uses `datetrunc()`), `extract(...)` covers fewer fields, and `weekday()`
+  only accepts `DATETIME` (the calendar macros cast internally).
+* **Impossible calendar dates are coerced, not rejected.** `date'2026-02-29'` and
+  `cast('2026-02-29' as date)` in a non-leap year both come back as `2026-03-01`, while
+  `to_date('2026-02-29', 'yyyy-mm-dd')` raises `ODPS-0121145`. Validate your own bounds.
+* **No cartesian products.** The generic `generate_series()` reaches 2^n rows by cross joining a
+  2-row set to itself, which MaxCompute rejects with `ODPS-0130252`; a native implementation on
+  `explode(sequence(...))` is provided, and `maxcompute__date_spine()` emits a single flat `SELECT`
+  so it can still be embedded inside a CTE.
+* **Fiscal macros need a complete preceding fiscal year.** `get_fiscal_year_dates()` derives
+  `fiscal_year_start_date` from `lag(week_end) over (order by week_end)`; the earliest fiscal year in
+  the date dimension it is given has no predecessor, so its start is `NULL` and every date of that
+  fiscal year disappears from the result without an error. Build the dimension at least one full
+  fiscal year before the first year you want to see. Related, both fiscal macros assume the
+  "Saturday nearest to the end of `year_end_month`" is unique: if the month ends on a Wednesday the
+  upstream `rank()` ties and duplicates rows, so check your `year_end_month` boundary once.
+  `fiscal_week_of_period` is ranked per `fiscal_period_number` across fiscal years (upstream
+  definition), so a 53-week year in the same table shifts that column for other years too.
+* The fiscal calendar is `week_start_day=1` based on MaxCompute's `dayof_week` numbering, i.e. weeks
+  start on **Sunday** and the "Saturday nearest month end" rule ends them on Saturday.
+
+### Running the integration tests on MaxCompute
+
+`integration_tests/ci/profiles.yml` has a `maxcompute` target that reads the connection from
+environment variables (`MC_TEST_PROJECT`, `MC_TEST_SCHEMA`, `ODPS_ENDPOINT`; credentials are taken by
+the adapter's `chain` auth, never from the repository). From `integration_tests/`:
+
+```sh
+dbt build -t maxcompute --select tag:maxcompute
+```
+
+The `maxcompute` tag marks the MaxCompute-specific contracts: calendar columns compared column by
+column against independently derived values, timezone shifts measured with `datediff()` (so the
+assertion does not depend on which timezone renders a timestamp), and fiscal year/period boundaries
+re-derived from the "Saturday nearest month end" rule. Their expectation tables sit next to them in
+`integration_tests/models/maxcompute/` (`mc_expected_*`), so a reviewer can check any single value by
+hand without re-running anything.
+
 ## Integration Tests (Developers Only)
 
 This project contains integration tests for all test macros in a separate `integration_tests` dbt project contained in this repo.
