@@ -829,3 +829,5 @@ To run the tests:
 
 1. You will need a profile called `integration_tests` in `~/.dbt/profiles.yml` pointing to a writable database. We only support postgres, BigQuery and Snowflake.
 2. Then, from within the `integration_tests` folder, run `dbt build` to run the test models in `integration_tests/models/schema_tests/` and run the tests specified in `integration_tests/models/schema_tests/schema.yml`
+
+<!-- drift probe: scratch commit for a reproducibility demo, 2026-10-01 -->
