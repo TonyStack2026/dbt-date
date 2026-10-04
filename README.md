@@ -830,9 +830,21 @@ MaxCompute project rather than read out of documentation.
 * **A `TIMESTAMP` literal needs a time part.** MaxCompute parses `timestamp'...'` only as
   `yyyy-mm-dd hh:mm:ss`; `timestamp'2026-01-01'` fails with `ODPS-0130161`, and the tempting
   `cast('2026-01-01' as timestamp)` is worse — the server returns a silent `NULL` instead of an error.
-  `get_base_dates()` normalises its inputs through `dbt_date.maxcompute_timestamp_literal()`, and
-  raises a compilation error for anything that is neither `yyyy-mm-dd` nor `yyyy-mm-dd[ T]hh:mm:ss`,
-  so a mistyped bound cannot turn into an empty calendar.
+  `get_base_dates()` normalises its inputs through `dbt_date.maxcompute_timestamp_literal()`:
+  `yyyy-mm-dd` becomes `yyyy-mm-dd 00:00:00`, an ISO `T` separator is replaced by a space, single-digit
+  fields are zero-padded, and a fractional part is kept (`2026-01-01 10:20:30.123` reads back as
+  `.123000`). Anything else raises a compilation error, so a mistyped bound cannot turn into an empty
+  calendar.
+* **A timezone designator in a timestamp literal is not one thing, so the helper refuses it.** Measured
+  on the same project: `'2026-01-01 10:20:30+08:00'` parses but the offset is *ignored* (the wall time is
+  kept), `'2026-01-01 10:20:30Z'` parses and is *converted* (`18:20:30` on a UTC+8 project), while
+  `'...-05:00'` and `'...+08'` are `ODPS-0130161` parse errors — and `cast('2026-01-01T10:20:30' as
+  timestamp)` returns a silent `NULL` even though the same text works as a literal. There is no rendering
+  that preserves the instant, so `maxcompute_timestamp_literal()` refuses a tz-carrying value (and a
+  timezone-aware Python object) and tells the caller to convert to project-local time first.
+  `integration_tests/check_timestamp_literal_guards.sh` asserts each refusal, and
+  `mc_assert_timestamp_literal_forms` asserts that every accepted shape renders to the canonical text
+  *and* is read back by the server as the expected instant.
 * **`TIMESTAMP` is an instant; the project timezone decides how you read it back.**
   `from_utc_timestamp(x, tz)` adds `tz`'s UTC offset to the value and `to_utc_timestamp(x, tz)`
   subtracts it. `convert_timezone(col, target_tz, source_tz)` therefore converts a column that stores
