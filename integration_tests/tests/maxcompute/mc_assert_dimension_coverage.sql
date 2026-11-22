@@ -1,31 +1,23 @@
--- Coverage assertion: the column-by-column comparisons join model to expectation on
--- date_day, so a spine that quietly drops or adds a period would pass them. This test
--- compares the two row sets directly: same count, same first day, same last day.
-with checks as (
-    select 'cross_year_rows' as check_name,
-           cast(m.n as string) as actual, cast(e.n as string) as expected
-    from (select count(*) as n from {{ ref('mc_date_dimension_cross_year') }}) m,
-         (select count(*) as n from {{ ref('mc_expected_date_dimension_cross_year') }}) e
-    where m.n <> e.n
-    union all
-    select 'cross_year_span',
-           cast(concat(cast(m.mn as string), ' .. ', cast(m.mx as string)) as string),
-           cast(concat(cast(e.mn as string), ' .. ', cast(e.mx as string)) as string)
-    from (select min(date_day) as mn, max(date_day) as mx from {{ ref('mc_date_dimension_cross_year') }}) m,
-         (select min(date_day) as mn, max(date_day) as mx from {{ ref('mc_expected_date_dimension_cross_year') }}) e
-    where m.mn <> e.mn or m.mx <> e.mx
-    union all
-    select 'leap_day_rows',
-           cast(m.n as string), cast(e.n as string)
-    from (select count(*) as n from {{ ref('mc_date_dimension_leap_day') }}) m,
-         (select count(*) as n from {{ ref('mc_expected_date_dimension_leap_day') }}) e
-    where m.n <> e.n
-    union all
-    select 'leap_day_span',
-           cast(concat(cast(m.mn as string), ' .. ', cast(m.mx as string)) as string),
-           cast(concat(cast(e.mn as string), ' .. ', cast(e.mx as string)) as string)
-    from (select min(date_day) as mn, max(date_day) as mx from {{ ref('mc_date_dimension_leap_day') }}) m,
-         (select min(date_day) as mn, max(date_day) as mx from {{ ref('mc_expected_date_dimension_leap_day') }}) e
-    where m.mn <> e.mn or m.mx <> e.mx
-)
-select * from checks
+-- Coverage assertions for the fixed-window date dimensions.
+--
+-- Two layers, deliberately separate because they catch different corruption:
+--   * mc_date_shape_violations -- row count and min .. max. Cheap, catches a shifted or
+--     short window (this is the check that caught the 11-05 off-by-one endpoint).
+--   * mc_date_key_violations   -- per-date multiplicity. Catches what the shape check cannot:
+--     an interior day dropped while another is duplicated leaves count, min and max identical.
+-- mc_assert_negative_controls feeds a corruption of exactly that second kind through both
+-- layers and requires shape=0 / multiplicity=2, so neither layer is decorative.
+{{ mc_date_shape_violations('cross_year', ref('mc_date_dimension_cross_year'), ref('mc_expected_date_dimension_cross_year')) }}
+
+union all
+
+{{ mc_date_key_violations('cross_year', ref('mc_date_dimension_cross_year'), ref('mc_expected_date_dimension_cross_year')) }}
+
+union all
+
+{{ mc_date_shape_violations('leap_day', ref('mc_date_dimension_leap_day'), ref('mc_expected_date_dimension_leap_day')) }}
+
+union all
+
+{{ mc_date_key_violations('leap_day', ref('mc_date_dimension_leap_day'), ref('mc_expected_date_dimension_leap_day')) }}
+
