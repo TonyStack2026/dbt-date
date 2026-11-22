@@ -78,14 +78,21 @@ select * from filtered
 
 {% macro maxcompute__date_spine(datepart, start_date, end_date) %}
 {#
-  Two MaxCompute-specific departures from the default implementation:
-    1. the row source: default__date_spine builds it with generate_series(), whose
-       cross-join body MaxCompute rejects (ODPS-0130252); maxcompute__generate_series
-       keeps that row count and its "upper bound must be positive" guard, using the
-       native sequence() + lateral view explode().
-    2. the shape: the default emits a WITH block, and get_base_dates already wraps this
-       macro inside `with date_spine as ( ... )`, so a nested WITH/lateral view would sit
-       inside a CTE. This version stays a single flat SELECT so it can be embedded anywhere.
+  Two MaxCompute-specific departures from the default implementation. Both are about not
+  depending on someone else's settings, not about a failure that reproduces through dbt today
+  (measured 11-22 in a throwaway worktree: the default body run through the adapter built fine
+  and produced exactly 59 rows for 2026-01-01..2026-03-01, first 2026-01-01, last 2026-02-28,
+  59 distinct -- i.e. the same row set this macro emits, which is the parity claim below):
+    1. the row source: default__date_spine builds it with generate_series(), whose cross-join
+       body MaxCompute rejects under the engine's own defaults (ODPS-0130252, measured in raw
+       probes). Through dbt it currently survives only because dbt-maxcompute sends
+       odps.sql.allow.cartesian=true in its global hints. maxcompute__generate_series keeps the
+       row count and the "upper bound must be positive" guard, uses native
+       sequence() + lateral view explode() in bounded chunks, and does not lean on that flag.
+    2. the shape: the default emits a WITH block, and get_base_dates already wraps this macro
+       inside `with date_spine as ( ... )`, so a nested WITH would sit inside a CTE. That too is
+       rejected under the engine defaults (measured 10-02) and accepted through the adapter
+       today. This version stays a single flat SELECT so it can be embedded anywhere.
 
   The span itself is deliberately NOT redefined here: generate_series(intervals) yields
   `intervals` rows and `generated_number - 1` turns them into offsets 0..intervals-1, exactly

@@ -870,10 +870,25 @@ MaxCompute project rather than read out of documentation.
 * **Impossible calendar dates are coerced, not rejected.** `date'2026-02-29'` and
   `cast('2026-02-29' as date)` in a non-leap year both come back as `2026-03-01`, while
   `to_date('2026-02-29', 'yyyy-mm-dd')` raises `ODPS-0121145`. Validate your own bounds.
-* **No cartesian products.** The generic `generate_series()` reaches 2^n rows by cross joining a
-  2-row set to itself, which MaxCompute rejects with `ODPS-0130252`; a native implementation on
-  `explode(sequence(...))` is provided, and `maxcompute__date_spine()` emits a single flat `SELECT`
-  so it can still be embedded inside a CTE.
+* **The row source is native, chunked, and does not depend on session flags.** The generic
+  `generate_series()` reaches 2^n rows by cross joining a 2-row set to itself. MaxCompute refuses
+  that shape under its own defaults (`ODPS-0130252`, measured), although the dbt adapter currently
+  sends `odps.sql.allow.cartesian=true`, so through dbt it is not refused today -- the native
+  `explode(sequence(...))` implementation is used because it builds exactly the requested rows
+  rather than 2^n, and because it does not lean on a flag this package does not own.
+  `sequence()` itself is documented to generate at most 10,000 elements by default, with
+  `odps.sql.max.sequence.length` as the knob. Measured on a live project: the cap is enforced when
+  set (`=100` makes `sequence(1, 1000)` fail with `ODPS-0121095` while `sequence(1, 50)` succeeds),
+  but this project's *default* does not bite today -- `sequence(1, 10001)` and even
+  `sequence(1, 100001)` return their full length. Depending on that default would mean a spine
+  longer than the documented 10,000 works only while some setting nobody owns stays as it is. So the
+  offsets are emitted in chunks of at most 10,000 elements joined with `UNION ALL`: disjoint,
+  contiguous, and inside the documented default for every span, with no session flag required in
+  either direction. `mc_assert_spine_range_limits.sql` builds daily spines of 9,999 / 10,000 /
+  10,001 rows from 2000-01-01 through `get_base_dates()` on the repo's own MaxCompute target (which
+  sets no `odps.*` flag) and requires exact membership -- row count, distinct days, both endpoints
+  and the window width -- rather than "rows came back".
+  `maxcompute__date_spine()` stays a single flat `SELECT` so it can still be embedded inside a CTE.
 * **Fiscal macros need a complete preceding fiscal year.** `get_fiscal_year_dates()` derives
   `fiscal_year_start_date` from `lag(week_end) over (order by week_end)`; the earliest fiscal year in
   the date dimension it is given has no predecessor, so its start is `NULL` and every date of that
