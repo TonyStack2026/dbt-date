@@ -52,3 +52,26 @@ select 'datetime_object',
        '{{ dbt_date.maxcompute_timestamp_literal(modules.datetime.datetime(2026, 1, 1, 10, 20, 30)) }}',
        '2026-01-01 10:20:30',
        timestamp'2026-01-01 10:20:30'
+union all
+-- The review's second point: the datetime-object branch used to render whole seconds only, so
+-- a naive datetime with microseconds lost them at compile time while the string branch kept
+-- them. Both shapes are pinned here -- expected_rendered is what the macro must emit, and
+-- expected_value is what the server must read it back as, so a silent truncation (or a server
+-- that keeps fewer digits than we render) shows up as a failing row.
+select 'datetime_object_micros',
+       '{{ dbt_date.maxcompute_timestamp_literal(modules.datetime.datetime(2026, 1, 1, 10, 20, 30, 123456)) }}',
+       '2026-01-01 10:20:30.123456',
+       timestamp'2026-01-01 10:20:30.123456'
+union all
+-- Small non-zero microsecond value: catches an implementation that renders the fraction
+-- without zero-padding (5 -> '.5' would read back as half a second, not five microseconds).
+select 'datetime_object_micros_padded',
+       '{{ dbt_date.maxcompute_timestamp_literal(modules.datetime.datetime(2026, 1, 1, 10, 20, 30, 5)) }}',
+       '2026-01-01 10:20:30.000005',
+       timestamp'2026-01-01 10:20:30.000005'
+union all
+-- And the zero case must stay clean: no trailing dot, no '.000000' noise.
+select 'datetime_object_no_micros',
+       '{{ dbt_date.maxcompute_timestamp_literal(modules.datetime.datetime(2026, 1, 1, 10, 20, 30, 0)) }}',
+       '2026-01-01 10:20:30',
+       timestamp'2026-01-01 10:20:30'

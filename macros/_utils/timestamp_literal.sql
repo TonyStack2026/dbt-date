@@ -73,6 +73,13 @@
                 ~ "time before passing it to dbt_date.")
             }}
         {%- endif -%}
-        {{ return(value.strftime('%Y-%m-%d %H:%M:%S')) }}
+        {%- set mc_text = value.strftime('%Y-%m-%d %H:%M:%S') -%}
+        {#- A `date` has no microsecond attribute; a `datetime` with one must not be silently
+            truncated here while the string branch above keeps the fraction. MaxCompute stores
+            the fraction (measured: '.123' comes back as '.123000'), so render 6 digits. -#}
+        {%- if value.microsecond is defined and value.microsecond -%}
+            {{ return(mc_text ~ '.' ~ '%06d' | format(value.microsecond)) }}
+        {%- endif -%}
+        {{ return(mc_text) }}
     {%- endif -%}
 {%- endmacro -%}
