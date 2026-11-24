@@ -117,3 +117,70 @@ from (select min(date_day) as mn, max(date_day) as mx from {{ model_relation }})
      (select min(date_day) as mn, max(date_day) as mx from {{ expected_relation }}) e
 where m.mn <> e.mn or m.mx <> e.mx
 {%- endmacro %}
+
+{% macro mc_spine_membership_violations(subject, model_relation, expected_rows, expected_first, expected_last) -%}
+{#- Exact membership of a daily spine. Reviewer point on 6fc2d46: counting distinct timestamps on a
+    TIMESTAMP column is not counting days -- replacing 2000-01-02 00:00:00 with 2000-01-01 12:00:00
+    leaves row count, distinct timestamp count, min .. max and window width all identical while a
+    calendar day is gone. So day identity is asserted twice:
+      * distinct_calendar_day_count -- count(distinct cast(date_day as date)) must equal the rows
+      * non_midnight_rows           -- every value must read as "<date> 00:00:00"; compared as text
+                                      because cast(<ts> as string) keeps a fraction
+                                      ('... 00:00:00.5'), so sub-second shifts are caught too
+                                      (both renderings measured 11-24)
+    plus the shape checks: rows, distinct timestamps, both endpoints, and the server-measured
+    window width (the timestamp overload of datediff, which is the form the 11-22 run proved this
+    engine accepts).
+
+    Written with one inline aggregate view per branch, never a leading WITH: this macro is
+    UNION ALL-ed four times by mc_assert_spine_range_limits and `UNION ALL <WITH>` is a parse
+    error on MaxCompute -- that is exactly how the first version of this macro failed the suite
+    on 11-24 (mc_assert_dimension_coverage hit the same rule on 11-22). -#}
+{%- set agg = "(select count(*) as n_rows, count(distinct date_day) as n_ts, count(distinct cast(date_day as date)) as n_days, sum(case when cast(date_day as string) <> concat(cast(cast(date_day as date) as string), ' 00:00:00') then 1 else 0 end) as n_nonmidnight, min(date_day) as lo, max(date_day) as hi, datediff(max(date_day), min(date_day), 'dd') + 1 as n_width from " ~ model_relation ~ ") mc_a" -%}
+select 'row_count' as failure_kind, '{{ subject }}' as subject, 'count(*)' as detail,
+       cast(n_rows as string) as actual, '{{ expected_rows }}' as expected
+from {{ agg }}
+where n_rows <> {{ expected_rows }}
+
+union all
+
+select 'distinct_timestamp_count', '{{ subject }}', 'count(distinct date_day)',
+       cast(n_ts as string), '{{ expected_rows }}'
+from {{ agg }}
+where n_ts <> {{ expected_rows }}
+
+union all
+
+select 'distinct_calendar_day_count', '{{ subject }}', 'count(distinct cast(date_day as date))',
+       cast(n_days as string), '{{ expected_rows }}'
+from {{ agg }}
+where n_days <> {{ expected_rows }}
+
+union all
+
+select 'non_midnight_rows', '{{ subject }}', 'rows whose text is not <date> 00:00:00',
+       cast(n_nonmidnight as string), '0'
+from {{ agg }}
+where n_nonmidnight <> 0
+
+union all
+
+select 'first_day', '{{ subject }}', 'min(date_day)',
+       cast(lo as string), '{{ expected_first }}'
+from {{ agg }}
+where cast(lo as string) <> '{{ expected_first }}'
+
+union all
+
+select 'last_day', '{{ subject }}', 'max(date_day)',
+       cast(hi as string), '{{ expected_last }}'
+from {{ agg }}
+where cast(hi as string) <> '{{ expected_last }}'
+
+union all
+
+select 'window_width_days', '{{ subject }}', 'datediff(max, min, dd) + 1',
+       cast(n_width as string), '{{ expected_rows }}'
+from {{ agg }}
+where n_width <> {{ expected_rows }}
+{%- endmacro -%}

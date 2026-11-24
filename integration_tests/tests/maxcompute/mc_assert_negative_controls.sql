@@ -24,6 +24,13 @@ mc_day_count_good_ctl as (
     select count(*) as detected
     from ( {{ mc_day_count_violations('mc_fiscal_periods', ref('mc_fiscal_periods'), 728) }} ) v
 ),
+mc_spine_ctl as (
+    -- the reviewer's counter-example: a moved row that keeps count / distinct-timestamp / min..max
+    -- intact. The day-identity checks inside mc_spine_membership_violations must report exactly the
+    -- two violations (one calendar day missing, one non-midnight value) -- no more, no less.
+    select count(*) as detected
+    from ( {{ mc_spine_membership_violations('mc_spine_shifted_row', ref('mc_spine_shifted_row'), 10001, '2000-01-01 00:00:00', '2027-05-19 00:00:00') }} ) v
+),
 mc_shape_ctl as (
     select count(*) as detected
     from ( {{ mc_date_shape_violations('mc_date_dimension_broken', ref('mc_date_dimension_broken'), ref('mc_expected_date_dimension_cross_year')) }} ) v
@@ -72,3 +79,8 @@ union all
 
 select 'day_count_is_quiet_on_real_model', cast(detected as string), '0'
 from mc_day_count_good_ctl where detected <> 0
+
+union all
+
+select 'spine_day_identity_catches_shifted_row', cast(detected as string), '2'
+from mc_spine_ctl where detected <> 2
