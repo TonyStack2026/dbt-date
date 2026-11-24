@@ -882,12 +882,20 @@ MaxCompute project rather than read out of documentation.
   but this project's *default* does not bite today -- `sequence(1, 10001)` and even
   `sequence(1, 100001)` return their full length. Depending on that default would mean a spine
   longer than the documented 10,000 works only while some setting nobody owns stays as it is. So the
-  offsets are emitted in chunks of at most 10,000 elements joined with `UNION ALL`: disjoint,
-  contiguous, and inside the documented default for every span, with no session flag required in
-  either direction. `mc_assert_spine_range_limits.sql` builds daily spines of 9,999 / 10,000 /
+  offsets are emitted in chunks of at most 10,000 elements joined with `UNION ALL`: disjoint and
+  contiguous, so `generate_series(n)` still yields exactly `1 .. n`, and every call stays inside the
+  documented default. The prerequisite is that the effective `odps.sql.max.sequence.length` is
+  10,000 or above -- which is the documented default. A project that sets the cap *below* 10,000 is
+  not accommodated by this chunk size, and reading the flag from SQL is not possible here
+  (`current_setting()` is not a function on this engine, measured). Supporting a lower cap would be
+  a separate change with its own default and test. `mc_assert_spine_range_limits.sql` builds daily spines of 9,999 / 10,000 /
   10,001 rows from 2000-01-01 through `get_base_dates()` on the repo's own MaxCompute target (which
-  sets no `odps.*` flag) and requires exact membership -- row count, distinct days, both endpoints
-  and the window width -- rather than "rows came back".
+  sets no `odps.*` flag), rebuilds the 10,001-row case with `odps.sql.max.sequence.length=10000`
+  pinned through the adapter's model-level `sql_hints`, and requires exact membership: row count,
+  distinct timestamps, distinct calendar days, every value at midnight, both endpoints and the window
+  width -- rather than "rows came back". The day-identity pair is there because counting distinct
+  timestamps cannot see a row moved from `2000-01-02 00:00:00` to `2000-01-01 12:00:00`: same counts,
+  same endpoints, one calendar day gone.
   `maxcompute__date_spine()` stays a single flat `SELECT` so it can still be embedded inside a CTE.
 * **Fiscal macros need a complete preceding fiscal year.** `get_fiscal_year_dates()` derives
   `fiscal_year_start_date` from `lag(week_end) over (order by week_end)`; the earliest fiscal year in

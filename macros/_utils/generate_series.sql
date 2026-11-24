@@ -74,9 +74,15 @@
          today (probes S3/S5). So a long spine is not broken *now* - it is only safe because
          of a default this package neither sets nor observes.
 
-      Hence: emit the offsets in chunks of at most 10,000 elements joined with UNION ALL. The
-      emitted SQL stays inside the documented default for every span, so it neither needs the
-      flag raised nor breaks if a project lowers it. Chunk i covers offsets i*CHUNK+1 ..
+      Hence: emit the offsets in chunks of at most 10,000 elements joined with UNION ALL, which
+      keeps every call inside the documented default. Prerequisite, stated as a prerequisite:
+      the chunk size is the documented number, so this holds when the effective
+      odps.sql.max.sequence.length is 10,000 or higher (the default, and the value pinned in
+      mc_spine_10001_capped). A project that sets the cap BELOW 10,000 is not accommodated --
+      supporting that would mean reading the flag, which there is no way to do from SQL here
+      (probed: current_setting() does not exist), or shrinking the chunk to a guessed number.
+      That is out of scope for this compatibility fix; if it is ever needed it is a separate
+      change with its own default and test. Chunk i covers offsets i*CHUNK+1 ..
       min((i+1)*CHUNK, upper_bound); the pieces are disjoint and contiguous, so the result is
       exactly 1..upper_bound - the same row count default__generate_series yields for the same
       bound (asserted for 9,999 / 10,000 / 10,001-day spans by mc_assert_spine_range_limits,
